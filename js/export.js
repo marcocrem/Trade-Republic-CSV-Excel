@@ -50,13 +50,22 @@ function xlsxDL(rows, name) {
       });
       
       // Date → real Date object
-      const dateValue = o.date || o.datum;
+      const dateValue = o.date || o.datum || o.priceDate;
       if (dateValue) {
-        const m = dateValue.match(/(\d{1,2})\s+([^\s.]+)\.?\s+(\d{4})/);
-        if (m) {
-          const d = new Date(+m[3], month[strip(m[2])] || 0, +m[1]);
-          const key = o.date ? 'date' : 'datum';
+        // Try German date format first (DD.MM.YYYY)
+        const germanMatch = dateValue.match(/(\d{2})\.(\d{2})\.(\d{4})/);
+        if (germanMatch) {
+          const d = new Date(+germanMatch[3], +germanMatch[2] - 1, +germanMatch[1]);
+          const key = o.date ? 'date' : (o.datum ? 'datum' : 'priceDate');
           o[key] = { v: d, t: 'd', z: 'dd.mm.yyyy' };
+        } else {
+          // Try other date formats (DD Month YYYY)
+          const m = dateValue.match(/(\d{1,2})\s+([^\s.]+)\.?\s+(\d{4})/);
+          if (m) {
+            const d = new Date(+m[3], month[strip(m[2])] || 0, +m[1]);
+            const key = o.date ? 'date' : (o.datum ? 'datum' : 'priceDate');
+            o[key] = { v: d, t: 'd', z: 'dd.mm.yyyy' };
+          }
         }
       }
       
@@ -78,6 +87,18 @@ function xlsxDL(rows, name) {
           if (hasQuantity) o.quantity = { v: q, t: 'n', z: '0.00' };
           if (hasStueck) o.stueck = { v: q, t: 'n', z: '0.00' };
         }
+      }
+      
+      // Handle pricePerUnit if it's a string (portfolio data)
+      if (o.pricePerUnit && typeof o.pricePerUnit === 'string') {
+        const num = parseFloat(o.pricePerUnit.replace(/\./g, '').replace(/,/, '.'));
+        if (!isNaN(num)) o.pricePerUnit = { v: num, t: 'n', z: '#,##0.00 "€"' };
+      }
+      
+      // Handle marketValueEUR if it's a string (portfolio data)
+      if (o.marketValueEUR && typeof o.marketValueEUR === 'string') {
+        const num = parseFloat(o.marketValueEUR.replace(/\./g, '').replace(/,/, '.'));
+        if (!isNaN(num)) o.marketValueEUR = { v: num, t: 'n', z: '#,##0.00 "€"' };
       }
       
       return o;

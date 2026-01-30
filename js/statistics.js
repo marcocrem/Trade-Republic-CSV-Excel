@@ -81,14 +81,24 @@ function analyzeCashFlow(transactions) {
   return result;
 }
 
-function createStatsSummary(cash, mmf) {
+function createStatsSummary(cash, mmf, portfolio = []) {
+  const totalTransactions = cash.length + mmf.length + portfolio.length;
+  const totalPortfolioValue = portfolio.reduce((sum, p) => sum + (parseEuro(p.marketValueEUR || 0)), 0);
+  
   let html = '<div id="results-summary" class="rounded-xl border border-slate-200 bg-white p-6 shadow-sm space-y-2">';
-  html += `<h3 class="text-lg font-semibold text-slate-900">Transaktionsübersicht (${cash.length + mmf.length} Transaktionen insgesamt)</h3>`;
+  html += `<h3 class="text-lg font-semibold text-slate-900">Transaktionsübersicht (${totalTransactions} Datensätze insgesamt)</h3>`;
   if (cash.length > 0) {
     html += `<p class="text-sm text-slate-700"><strong class="font-semibold text-slate-900">${cash.length} Cash-Transaktionen</strong> gefunden</p>`;
   }
   if (mmf.length > 0) {
     html += `<p class="text-sm text-slate-700"><strong class="font-semibold text-slate-900">${mmf.length} Geldmarktfonds-Transaktionen</strong> gefunden</p>`;
+  }
+  if (portfolio.length > 0) {
+    html += `<p class="text-sm text-slate-700"><strong class="font-semibold text-slate-900">${portfolio.length} Portfolio-Positionen</strong> gefunden`;
+    if (totalPortfolioValue > 0) {
+      html += ` (Gesamtwert: ${formatEuro(totalPortfolioValue)})`;
+    }
+    html += `</p>`;
   }
   html += '</div>';
   return html;

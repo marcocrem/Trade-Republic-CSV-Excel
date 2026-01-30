@@ -13,10 +13,10 @@ const PARSER_NOOP = () => {};
 const FOOTER_BOTTOM_BAND = 120; // points from the bottom to drop (try 150–220)
 
 /**
- * Parse the entire PDF and extract cash & interest transactions.
+ * Parse the entire PDF and extract cash, interest, and portfolio transactions.
  * @param {PDFDocumentProxy} pdf
  * @param {{ updateStatus?: Function, updateProgress?: Function, footerBandPx?: number }} options
- * @returns {Promise<{ cash: Array<object>, interest: Array<object> }>}
+ * @returns {Promise<{ cash: Array<object>, interest: Array<object>, portfolio: Array<object> }>}
  */
 async function parsePDF(pdf, options = {}) {
   console.log('Starting PDF parsing...');
@@ -31,11 +31,14 @@ async function parsePDF(pdf, options = {}) {
   updateStatus('Parsing PDF...');
   let allCashTransactions = [];
   let allInterestTransactions = [];
+  let allPortfolioPositions = [];
   let cashColumnBoundaries = null;
   let interestColumnBoundaries = null;
+  let portfolioColumnBoundaries = null;
 
   let isParsingCash = false;
   let isParsingInterest = false;
+  let isParsingPortfolio = false;
 
   for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
     console.log(`--- Processing Page ${pageNum} ---`);
@@ -84,6 +87,24 @@ async function parsePDF(pdf, options = {}) {
     });
 
     const shouldProcessInterest = isParsingInterest || !!interestStartMarker;
+
+    // --- Portfolio Section Markers ---
+    const portfolioStartMarker = items.find(item => {
+      const t = item.text.trim();
+      return t === 'POSITIONEN' || t === 'POSITIONS' || 
+             (t.includes('DEPOTAUSZUG') && !t.includes('SEITE'));
+    });
+
+    const portfolioEndMarker = items.find(item => {
+      const t = item.text.trim();
+      return t.includes('ANZAHL POSITIONEN') || 
+             t.includes('NUMBER OF POSITIONS') ||
+             t === 'Achtung:' || 
+             t === 'NOTE:' || 
+             t === 'ATTENTION:';
+    });
+
+    const shouldProcessPortfolio = isParsingPortfolio || !!portfolioStartMarker;
 
     // --- Cash Transaction Parsing Logic ---
     if (shouldProcessCash) {
@@ -142,11 +163,55 @@ async function parsePDF(pdf, options = {}) {
     } else if (shouldProcessInterest) {
       isParsingInterest = true;
     }
+
+    // --- Portfolio Position Parsing Logic ---
+    if (shouldProcessPortfolio) {
+      let portfolioItems = [...items];
+      if (portfolioStartMarker) {
+        portfolioItems = portfolioItems.filter(item => item.y <= portfolioStartMarker.y);
+      }
+      if (portfolioEndMarker) {
+        portfolioItems = portfolioItems.filter(item => item.y > portfolioEndMarker.y);
+      }
+
+      // Log raw portfolio items for debugging
+      const debugLog = window.debugLog || console.log;
+      if (pageNum === 1) {
+        debugLog(`\n=== RAW PORTFOLIO ITEMS (Page ${pageNum}) ===`);
+        debugLog(`Total portfolio items: ${portfolioItems.length}`);
+        portfolioItems.slice(0, 50).forEach((item, idx) => {
+          debugLog(`Item ${idx}: X=${item.x.toFixed(1)}, Y=${item.y.toFixed(1)}, Text="${item.text}"`);
+        });
+        if (portfolioItems.length > 50) {
+          debugLog(`... and ${portfolioItems.length - 50} more items`);
+        }
+      }
+
+      let portfolioHeaders = findPortfolioHeaders(portfolioItems);
+      if (portfolioHeaders) {
+        portfolioColumnBoundaries = calculatePortfolioColumnBoundaries(portfolioHeaders);
+        console.log('Found new Portfolio headers and boundaries:', portfolioColumnBoundaries);
+      } else if (isParsingPortfolio && portfolioColumnBoundaries) {
+        console.log(`Page ${pageNum}: No new portfolio headers found, continuing with previous boundaries.`);
+      }
+
+      if (portfolioColumnBoundaries) {
+        const pagePortfolioPositions = extractPortfolioPositions(portfolioItems, portfolioColumnBoundaries);
+        console.log(`Page ${pageNum}: Extracted ${pagePortfolioPositions.length} portfolio positions.`);
+        allPortfolioPositions = allPortfolioPositions.concat(pagePortfolioPositions);
+      }
+    }
+    if (portfolioEndMarker) {
+      isParsingPortfolio = false;
+    } else if (shouldProcessPortfolio) {
+      isParsingPortfolio = true;
+    }
   }
 
   console.log(`Total cash transactions: ${allCashTransactions.length}`);
   console.log(`Total interest transactions: ${allInterestTransactions.length}`);
-  return { cash: allCashTransactions, interest: allInterestTransactions };
+  console.log(`Total portfolio positions: ${allPortfolioPositions.length}`);
+  return { cash: allCashTransactions, interest: allInterestTransactions, portfolio: allPortfolioPositions };
 }
 
 // --- Generic and Cash-Specific Functions ---
@@ -377,6 +442,379 @@ function extractTransactionsFromPage(items, boundaries, type) {
   return transactions;
 }
 
+// --- Portfolio-Specific Functions ---
+function findPortfolioHeaders(items) {
+  const headerKeywords = [
+    'STK.', 'NOMINALE', 'WERTPAPIERBEZEICHNUNG', 'KURS PRO STÜCK', 'KURSWERT IN EUR',
+    // English equivalents
+    'QUANTITY', 'SECURITY DESCRIPTION', 'PRICE PER UNIT', 'MARKET VALUE'
+  ];
+  const potentialHeaders = items.filter(item =>
+    item.text.trim().length > 2 &&
+    item.text.trim() === item.text.trim().toUpperCase() &&
+    headerKeywords.some(kw => item.text.includes(kw))
+  );
+
+  console.log('Potential portfolio headers found:', potentialHeaders.map(h => h.text.trim()));
+
+  const matchAny = (labels) => potentialHeaders.find(p => labels.some(label => p.text.trim().includes(label))) || null;
+
+  let headers = {
+    QUANTITY: matchAny(['STK.', 'NOMINALE', 'QUANTITY']),
+    SECURITY: matchAny(['WERTPAPIERBEZEICHNUNG', 'SECURITY DESCRIPTION', 'SECURITY']),
+    PRICE: matchAny(['KURS PRO STÜCK', 'PRICE PER UNIT', 'PRICE']),
+    VALUE: matchAny(['KURSWERT IN EUR', 'MARKET VALUE', 'VALUE'])
+  };
+
+  console.log('Matched portfolio headers:', {
+    QUANTITY: headers.QUANTITY?.text,
+    SECURITY: headers.SECURITY?.text,
+    PRICE: headers.PRICE?.text,
+    VALUE: headers.VALUE?.text
+  });
+
+  if (!headers.QUANTITY || !headers.SECURITY || !headers.PRICE || !headers.VALUE) return null;
+  return headers;
+}
+
+function calculatePortfolioColumnBoundaries(headers) {
+  return {
+    quantity: { start: 0, end: headers.SECURITY.x - 5 },
+    security: { start: headers.SECURITY.x - 5, end: headers.PRICE.x - 5 },
+    price: { start: headers.PRICE.x - 5, end: headers.VALUE.x - 5 },
+    value: { start: headers.VALUE.x - 5, end: Infinity },
+    headerY: headers.QUANTITY.y,
+  };
+}
+
+// Helper function to group items into lines by Y-coordinate
+function groupItemsIntoLines(items, eps = 1) {
+  const rows = new Map();
+  for (const it of items) {
+    const y = Math.round(it.y / eps) * eps;
+    if (!rows.has(y)) rows.set(y, []);
+    rows.get(y).push(it);
+  }
+  const lines = [];
+  for (const y of [...rows.keys()].sort((a, b) => b - a)) { // Sort descending (top to bottom)
+    const row = rows.get(y).sort((a, b) => a.x - b.x);
+    lines.push({ y, items: row, text: row.map(r => r.text).join(' ').trim() });
+  }
+  return lines;
+}
+
+// Helper to parse European number format
+function parseEuropeanNumber(str) {
+  if (!str || typeof str !== 'string') return null;
+  const cleanStr = str.replace(/\s|\u202f/g, '').replace(/\./g, '').replace(',', '.');
+  const v = Number(cleanStr);
+  return Number.isFinite(v) ? v : null;
+}
+
+// Helper function to extract right-side data (price/date/value)
+function extractRightSideData(rightItems, text, boundaries, position) {
+  // Extract date from text first
+  const DATE_PATTERN = /(\d{2}\.\d{2}\.\d{4})/;
+  const dateMatch = DATE_PATTERN.exec(text);
+  if (dateMatch && !position.priceDate) {
+    position.priceDate = dateMatch[1];
+  }
+
+  // Extract numeric values based on X position
+  // Sort items by X position to process in order (left to right: price -> date -> value)
+  const sortedItems = [...rightItems].sort((a, b) => a.x - b.x);
+  
+  // Track what we've found
+  let foundPrice = position.pricePerUnit !== null;
+  let foundValue = position.marketValueEUR !== null;
+  
+  for (const item of sortedItems) {
+    const num = parseEuropeanNumber(item.text);
+    
+    // Check if this item is in the price column
+    const isInPriceColumn = item.x >= boundaries.price.start && item.x < boundaries.value.start;
+    // Check if this item is in the value column
+    const isInValueColumn = item.x >= boundaries.value.start;
+    
+    if (num !== null) {
+      // Price column - explicitly check if we're in price column range
+      if (isInPriceColumn && !foundPrice) {
+        // Always set price, even if it's 0 (don't skip zero prices)
+        position.pricePerUnit = num;
+        foundPrice = true;
+      }
+      // Value column
+      else if (isInValueColumn && !foundValue) {
+        position.marketValueEUR = num;
+        foundValue = true;
+      }
+    } else {
+      // Check if this is a date string (not a number but in right column)
+      const itemDateMatch = DATE_PATTERN.exec(item.text);
+      if (itemDateMatch && !position.priceDate) {
+        position.priceDate = itemDateMatch[1];
+      }
+      
+      // Special case: if we see "0,00" or "0.00" text in price column, treat as zero price
+      if (isInPriceColumn && !foundPrice && (item.text.includes('0,00') || item.text.includes('0.00') || item.text.trim() === '0')) {
+        position.pricePerUnit = 0;
+        foundPrice = true;
+      }
+    }
+  }
+  
+  // Fallback: if we still don't have a price but have a value, and we see "0,00" anywhere in price column area
+  if (!foundPrice && foundValue) {
+    // Look for any item in price column that might be zero
+    const priceColumnItems = rightItems.filter(item => 
+      item.x >= boundaries.price.start && item.x < boundaries.value.start
+    );
+    for (const item of priceColumnItems) {
+      const text = item.text.trim();
+      if (text === '0' || text === '0,00' || text === '0.00' || text === '0,0' || text === '0.0') {
+        position.pricePerUnit = 0;
+        foundPrice = true;
+        break;
+      }
+    }
+  }
+}
+
+function extractPortfolioPositions(items, boundaries) {
+  // Use global debugLog function or fallback to console.log
+  const debugLog = window.debugLog || ((msg) => { console.log(msg); });
+  
+  debugLog('=== EXTRACTING PORTFOLIO POSITIONS ===');
+  debugLog(`Total items: ${items.length}`);
+  debugLog(`Boundaries: ${JSON.stringify(boundaries)}`);
+  
+  // Filter items below headers
+  const contentItems = items.filter(item => item.y < boundaries.headerY - 5 && item.text.trim() !== '');
+  debugLog(`Content items (below headers): ${contentItems.length}`);
+  
+  if (contentItems.length === 0) return [];
+
+  // Group items into lines
+  const lines = groupItemsIntoLines(contentItems, 2); // eps=2 for slight tolerance
+  debugLog(`Grouped into lines: ${lines.length}`);
+  
+  // Log all lines for debugging
+  debugLog('=== ALL LINES (top to bottom) ===');
+  lines.forEach((line, idx) => {
+    debugLog(`Line ${idx}: Y=${line.y.toFixed(1)}, Text="${line.text}", Items=${line.items.length}`);
+    line.items.forEach((item, itemIdx) => {
+      debugLog(`  Item ${itemIdx}: X=${item.x.toFixed(1)}, Text="${item.text}"`);
+    });
+  });
+
+  const positions = [];
+  let currentPosition = null;
+
+  // Regex patterns
+  const QTY_LINE = /^\s*([\d.]+,\d{2,6}|\d+([.,]\d+)?)\s*(Stk\.?|Nominale)\b/i;
+  const ISIN_PATTERN = /\bISIN:\s*([A-Z]{2}[A-Z0-9]{10})\b/;
+  const COUNTRY_PATTERN = /^Lagerland\s*:\s*(.+)$/i;
+  const DATE_PATTERN = /(\d{2}\.\d{2}\.\d{4})/;
+  const SKIP_PATTERNS = /(POSITIONEN|STK\.?\s*\/\s*NOMINALE|KURS PRO ST[ÜU]CK|KURSWERT IN EUR|DEPOTAUSZUG|SEITE|Aufstellung|ANZAHL POSITIONEN)/i;
+  const SKIP_NAME_PATTERNS = /(Wertpapierrechnung|Wertpapierrechnung in Deutschland)/i;
+  
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const text = line.text;
+
+    debugLog(`\n--- Processing Line ${i} ---`);
+    debugLog(`Text: "${text}"`);
+    debugLog(`Y: ${line.y.toFixed(1)}, Items: ${line.items.length}`);
+
+    // Skip header lines and section markers
+    if (SKIP_PATTERNS.test(text)) {
+      debugLog('  -> SKIPPED (header/section marker)');
+      continue;
+    }
+
+    // Check if this is a quantity line (start of new position)
+    const qtyMatch = QTY_LINE.exec(text);
+    if (qtyMatch) {
+      debugLog('  -> QUANTITY LINE DETECTED');
+      debugLog(`  Match: qty="${qtyMatch[1]}", unit="${qtyMatch[3]}"`);
+      
+      // Save previous position if exists
+      if (currentPosition && currentPosition.quantity != null) {
+        debugLog(`  -> Saving previous position: name="${currentPosition.name}", nameExtra="${currentPosition.nameExtra}"`);
+        positions.push(currentPosition);
+      }
+
+      // Start new position
+      const qtyStr = qtyMatch[1];
+      const unit = qtyMatch[3];
+      currentPosition = {
+        quantity: parseEuropeanNumber(qtyStr),
+        unit: /^stk/i.test(unit) ? 'Stk' : unit,
+        name: '',
+        nameExtra: '',
+        isin: '',
+        pricePerUnit: null,
+        priceDate: '',
+        marketValueEUR: null,
+        custodyCountry: ''
+      };
+      debugLog(`  -> Created new position: quantity=${currentPosition.quantity}, unit="${currentPosition.unit}"`);
+
+      // Check if name and price/value are on the same line (e.g., "0,060721 Stk. ASML Holding N.V. 1.206,80 73,28")
+      // Extract name from the line (everything between quantity and right-aligned data)
+      const rightItems = line.items.filter(item => item.x >= boundaries.price.start);
+      const leftItems = line.items.filter(item => item.x < boundaries.price.start);
+      
+      // Remove quantity items from left items
+      const nameItems = leftItems.filter(item => {
+        const itemText = item.text.trim();
+        return !QTY_LINE.test(itemText) && itemText.length > 0;
+      });
+      
+      if (nameItems.length > 0) {
+        const nameText = nameItems.map(item => item.text).join(' ').trim();
+        if (nameText.length > 0 && !SKIP_NAME_PATTERNS.test(nameText)) {
+          currentPosition.name = nameText;
+          debugLog(`  -> Extracted name from same line: "${nameText}"`);
+        }
+      }
+
+      // Extract right-aligned data (price/date/value)
+      debugLog(`  -> Right-aligned items on this line: ${rightItems.length}`);
+      extractRightSideData(rightItems, text, boundaries, currentPosition);
+
+      continue;
+    }
+
+    // If we have a current position, process this line
+    if (currentPosition) {
+      debugLog(`  -> Processing for position (quantity=${currentPosition.quantity})`);
+      
+      // Skip "Wertpapierrechnung in Deutschland" lines - these are not part of the name
+      if (SKIP_NAME_PATTERNS.test(text)) {
+        debugLog('  -> SKIPPED (Wertpapierrechnung pattern)');
+        continue;
+      }
+
+      // Check for ISIN - once we find ISIN, stop adding to name
+      const isinMatch = ISIN_PATTERN.exec(text);
+      if (isinMatch) {
+        currentPosition.isin = isinMatch[1];
+        debugLog(`  -> ISIN FOUND: ${currentPosition.isin}`);
+        continue;
+      }
+
+      // Check for custody country
+      const countryMatch = COUNTRY_PATTERN.exec(text);
+      if (countryMatch) {
+        currentPosition.custodyCountry = countryMatch[1].trim();
+        debugLog(`  -> COUNTRY FOUND: ${currentPosition.custodyCountry}`);
+        // After country, we might have right-side data on next lines
+        continue;
+      }
+
+      // Check if this line has right-aligned data (price/date/value)
+      const rightItems = line.items.filter(item => item.x >= boundaries.price.start);
+      const hasRightData = rightItems.length > 0;
+      debugLog(`  -> Has right-aligned data: ${hasRightData} (${rightItems.length} items)`);
+      
+      if (hasRightData) {
+        debugLog(`  -> Extracting right-side data`);
+        extractRightSideData(rightItems, text, boundaries, currentPosition);
+        continue;
+      }
+      
+      // If we haven't found ISIN yet and this is not right-aligned data, it's part of the security name
+      // The name comes after the quantity line and before the ISIN line
+      // Also skip if this looks like a quantity line (shouldn't happen but safety check)
+      const isQtyLine = QTY_LINE.test(text);
+      const hasSkipPattern = SKIP_NAME_PATTERNS.test(text);
+      const shouldAddToName = text.trim().length > 0 && 
+                               !currentPosition.isin && 
+                               !hasRightData && 
+                               !isQtyLine &&
+                               !hasSkipPattern;
+      
+      debugLog(`  -> Name extraction check:`);
+      debugLog(`     text.trim().length > 0: ${text.trim().length > 0}`);
+      debugLog(`     !currentPosition.isin: ${!currentPosition.isin}`);
+      debugLog(`     !hasRightData: ${!hasRightData}`);
+      debugLog(`     !isQtyLine: ${!isQtyLine}`);
+      debugLog(`     !hasSkipPattern: ${!hasSkipPattern}`);
+      debugLog(`     shouldAddToName: ${shouldAddToName}`);
+      
+      if (shouldAddToName) {
+        const cleanText = text.trim();
+        if (cleanText.length > 0) {
+          if (currentPosition.name === '') {
+            currentPosition.name = cleanText;
+            debugLog(`  -> ✓ SET NAME: "${cleanText}"`);
+          } else {
+            currentPosition.nameExtra = currentPosition.nameExtra 
+              ? (currentPosition.nameExtra + ' ' + cleanText)
+              : cleanText;
+            debugLog(`  -> ✓ ADDED TO NAMEEXTRA: "${cleanText}" (full: "${currentPosition.nameExtra}")`);
+          }
+        }
+      } else {
+        debugLog(`  -> ✗ NOT ADDING TO NAME (conditions not met)`);
+      }
+    } else {
+      debugLog(`  -> No current position, skipping`);
+    }
+  }
+  
+  // Don't forget the last position
+  if (currentPosition && currentPosition.quantity != null) {
+    debugLog(`\n--- Saving last position ---`);
+    debugLog(`Name: "${currentPosition.name}", NameExtra: "${currentPosition.nameExtra}"`);
+    positions.push(currentPosition);
+  }
+
+  debugLog(`\n=== EXTRACTED ${positions.length} POSITIONS ===`);
+  positions.forEach((pos, idx) => {
+    debugLog(`Position ${idx + 1}:`);
+    debugLog(`  Quantity: ${pos.quantity} ${pos.unit}`);
+    debugLog(`  Name: "${pos.name}"`);
+    debugLog(`  NameExtra: "${pos.nameExtra}"`);
+    debugLog(`  ISIN: ${pos.isin}`);
+    debugLog(`  Price: ${pos.pricePerUnit}, Value: ${pos.marketValueEUR}`);
+  });
+
+  // Clean up and compute derived values
+  return positions.map(pos => {
+    // Combine name and nameExtra - ensure we have a name
+    let fullName = '';
+    if (pos.name && pos.nameExtra) {
+      fullName = `${pos.name} ${pos.nameExtra}`;
+    } else if (pos.name) {
+      fullName = pos.name;
+    } else if (pos.nameExtra) {
+      fullName = pos.nameExtra; // Fallback if name is empty but nameExtra exists
+    }
+    
+    console.log(`Final position name: "${fullName}" (name: "${pos.name}", nameExtra: "${pos.nameExtra}")`);
+    
+    // Compute value if missing
+    let computedValue = null;
+    if (pos.quantity != null && pos.pricePerUnit != null) {
+      computedValue = Math.round(pos.quantity * pos.pricePerUnit * 100) / 100;
+    }
+
+    return {
+      quantity: pos.quantity,
+      unit: pos.unit,
+      name: fullName.trim(),
+      isin: pos.isin,
+      pricePerUnit: pos.pricePerUnit,
+      priceDate: pos.priceDate,
+      marketValueEUR: pos.marketValueEUR || computedValue,
+      custodyCountry: pos.custodyCountry,
+      computedValue: computedValue
+    };
+  });
+}
+
 function parseCurrency(str) {
   if (!str || typeof str !== 'string') return 0;
   const cleanStr = str
@@ -418,3 +856,4 @@ window.parseCurrency = parseCurrency;
 window.computeCashSanityChecks = computeCashSanityChecks;
 window.findCashHeaders = findCashHeaders;
 window.findInterestHeaders = findInterestHeaders;
+window.findPortfolioHeaders = findPortfolioHeaders;
