@@ -81,9 +81,10 @@ function analyzeCashFlow(transactions) {
   return result;
 }
 
-function createStatsSummary(cash, mmf, portfolio = []) {
-  const totalTransactions = cash.length + mmf.length + portfolio.length;
+function createStatsSummary(cash, mmf, portfolio = [], crypto = []) {
+  const totalTransactions = cash.length + mmf.length + portfolio.length + crypto.length;
   const totalPortfolioValue = portfolio.reduce((sum, p) => sum + (parseEuro(p.marketValueEUR || 0)), 0);
+  const totalCryptoValue = crypto.reduce((sum, c) => sum + (parseEuro(c.marketValueEUR || 0)), 0);
   
   let html = '<div id="results-summary" class="rounded-xl border border-slate-200 bg-white p-6 shadow-sm space-y-2">';
   html += `<h3 class="text-lg font-semibold text-slate-900">Transaktionsübersicht (${totalTransactions} Datensätze insgesamt)</h3>`;
@@ -97,6 +98,13 @@ function createStatsSummary(cash, mmf, portfolio = []) {
     html += `<p class="text-sm text-slate-700"><strong class="font-semibold text-slate-900">${portfolio.length} Portfolio-Positionen</strong> gefunden`;
     if (totalPortfolioValue > 0) {
       html += ` (Gesamtwert: ${formatEuro(totalPortfolioValue)})`;
+    }
+    html += `</p>`;
+  }
+  if (crypto.length > 0) {
+    html += `<p class="text-sm text-slate-700"><strong class="font-semibold text-slate-900">${crypto.length} Crypto-Positionen</strong> gefunden`;
+    if (totalCryptoValue > 0) {
+      html += ` (Gesamtwert: ${formatEuro(totalCryptoValue)})`;
     }
     html += `</p>`;
   }

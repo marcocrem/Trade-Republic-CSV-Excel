@@ -23,6 +23,7 @@ function createTabNavigationWithTrading(configOrCash, mmfComponent, tradingCompo
     charts,
     mmf,
     portfolio,
+    crypto,
     trading,
     support,
     onChartsActivate
@@ -35,6 +36,7 @@ function createTabNavigationWithTrading(configOrCash, mmfComponent, tradingCompo
     { label: 'Diagramme', content: charts, onActivate: onChartsActivate },
     { label: 'Geldmarktfonds', content: mmf },
     { label: 'Portfolio', content: portfolio },
+    { label: 'Crypto', content: crypto },
     { label: 'Trading P&L (Beta)', content: trading },
     { label: 'Ergebnisübersicht', content: support }
   ].filter(def => def && def.content);
@@ -250,13 +252,13 @@ function renderComponent(title, rows, prefix, options = {}) {
   return container;
 }
 
-function renderSupportComponent({ cashCount = 0, mmfCount = 0, portfolioCount = 0, tradingCount = 0, failedChecks = 0 } = {}) {
+function renderSupportComponent({ cashCount = 0, mmfCount = 0, portfolioCount = 0, cryptoCount = 0, tradingCount = 0, failedChecks = 0 } = {}) {
   const container = document.createElement('div');
   container.className = 'space-y-6';
 
   const summary = document.createElement('div');
   summary.className = 'rounded-xl border border-slate-200 bg-slate-50 p-6 text-sm text-slate-700';
-  const total = cashCount + mmfCount + portfolioCount + tradingCount;
+  const total = cashCount + mmfCount + portfolioCount + cryptoCount + tradingCount;
   summary.innerHTML = `
     <h3 class="text-base font-semibold text-slate-900">Analyse abgeschlossen</h3>
     <p class="mt-2 leading-relaxed">Es wurden <strong>${total}</strong> Datensätze erkannt${

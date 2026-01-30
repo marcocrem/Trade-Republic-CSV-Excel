@@ -32,13 +32,16 @@ async function parsePDF(pdf, options = {}) {
   let allCashTransactions = [];
   let allInterestTransactions = [];
   let allPortfolioPositions = [];
+  let allCryptoPositions = [];
   let cashColumnBoundaries = null;
   let interestColumnBoundaries = null;
   let portfolioColumnBoundaries = null;
+  let cryptoColumnBoundaries = null;
 
   let isParsingCash = false;
   let isParsingInterest = false;
   let isParsingPortfolio = false;
+  let isParsingCrypto = false;
 
   for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
     console.log(`--- Processing Page ${pageNum} ---`);
@@ -105,6 +108,21 @@ async function parsePDF(pdf, options = {}) {
     });
 
     const shouldProcessPortfolio = isParsingPortfolio || !!portfolioStartMarker;
+
+    // --- Crypto Section Markers ---
+    const cryptoStartMarker = items.find(item => {
+      const t = item.text.trim();
+      return t.includes('CRYPTO-ÜBERSICHT') || t.includes('CRYPTO OVERVIEW');
+    });
+
+    const cryptoEndMarker = items.find(item => {
+      const t = item.text.trim();
+      return t.includes('ANZAHL DER POSITIONEN') || 
+             t.includes('NUMBER OF POSITIONS') ||
+             t.includes('KURSWERT IN EUR') && t.includes('SUMME');
+    });
+
+    const shouldProcessCrypto = isParsingCrypto || !!cryptoStartMarker;
 
     // --- Cash Transaction Parsing Logic ---
     if (shouldProcessCash) {
@@ -206,12 +224,48 @@ async function parsePDF(pdf, options = {}) {
     } else if (shouldProcessPortfolio) {
       isParsingPortfolio = true;
     }
+
+    // --- Crypto Position Parsing Logic ---
+    if (shouldProcessCrypto) {
+      let cryptoItems = [...items];
+      if (cryptoStartMarker) {
+        cryptoItems = cryptoItems.filter(item => item.y <= cryptoStartMarker.y);
+      }
+      if (cryptoEndMarker) {
+        cryptoItems = cryptoItems.filter(item => item.y > cryptoEndMarker.y);
+      }
+
+      let cryptoHeaders = findCryptoHeaders(cryptoItems);
+      if (cryptoHeaders) {
+        cryptoColumnBoundaries = calculateCryptoColumnBoundaries(cryptoHeaders);
+        console.log('Found new Crypto headers and boundaries:', cryptoColumnBoundaries);
+      } else if (isParsingCrypto && cryptoColumnBoundaries) {
+        console.log(`Page ${pageNum}: No new crypto headers found, continuing with previous boundaries.`);
+      }
+
+      if (cryptoColumnBoundaries) {
+        const pageCryptoPositions = extractCryptoPositions(cryptoItems, cryptoColumnBoundaries);
+        console.log(`Page ${pageNum}: Extracted ${pageCryptoPositions.length} crypto positions.`);
+        allCryptoPositions = allCryptoPositions.concat(pageCryptoPositions);
+      }
+    }
+    if (cryptoEndMarker) {
+      isParsingCrypto = false;
+    } else if (shouldProcessCrypto) {
+      isParsingCrypto = true;
+    }
   }
 
   console.log(`Total cash transactions: ${allCashTransactions.length}`);
   console.log(`Total interest transactions: ${allInterestTransactions.length}`);
   console.log(`Total portfolio positions: ${allPortfolioPositions.length}`);
-  return { cash: allCashTransactions, interest: allInterestTransactions, portfolio: allPortfolioPositions };
+  console.log(`Total crypto positions: ${allCryptoPositions.length}`);
+  return { 
+    cash: allCashTransactions, 
+    interest: allInterestTransactions, 
+    portfolio: allPortfolioPositions,
+    crypto: allCryptoPositions
+  };
 }
 
 // --- Generic and Cash-Specific Functions ---
@@ -850,6 +904,295 @@ function computeCashSanityChecks(transactions) {
   return { transactions: enhancedTransactions, failedChecks };
 }
 
+// --- Crypto-Specific Functions ---
+function findCryptoHeaders(items) {
+  const headerKeywords = [
+    'NOMINALE', 'INSTRUMENT NAME', 'PREIS JE ANTEIL', 'KAUFWERT IN EUR', 'GEWINN / VERLUST',
+    // English equivalents
+    'QUANTITY', 'INSTRUMENT', 'PRICE PER UNIT', 'PURCHASE VALUE', 'GAIN / LOSS'
+  ];
+  const potentialHeaders = items.filter(item =>
+    item.text.trim().length > 2 &&
+    item.text.trim() === item.text.trim().toUpperCase() &&
+    headerKeywords.some(kw => item.text.includes(kw))
+  );
+
+  console.log('Potential crypto headers found:', potentialHeaders.map(h => h.text.trim()));
+
+  const matchAny = (labels) => potentialHeaders.find(p => labels.some(label => p.text.trim().includes(label))) || null;
+
+  let headers = {
+    QUANTITY: matchAny(['NOMINALE', 'QUANTITY']),
+    NAME: matchAny(['INSTRUMENT NAME', 'INSTRUMENT', 'NAME']),
+    PRICE: matchAny(['PREIS JE ANTEIL', 'PRICE PER UNIT', 'PRICE']),
+    PURCHASE_VALUE: matchAny(['KAUFWERT IN EUR', 'PURCHASE VALUE']),
+    GAIN_LOSS: matchAny(['GEWINN / VERLUST', 'GAIN / LOSS', 'GEWINN', 'VERLUST'])
+  };
+
+  console.log('Matched crypto headers:', {
+    QUANTITY: headers.QUANTITY?.text,
+    NAME: headers.NAME?.text,
+    PRICE: headers.PRICE?.text,
+    PURCHASE_VALUE: headers.PURCHASE_VALUE?.text,
+    GAIN_LOSS: headers.GAIN_LOSS?.text
+  });
+
+  if (!headers.QUANTITY || !headers.NAME || !headers.PRICE) return null;
+  return headers;
+}
+
+function calculateCryptoColumnBoundaries(headers) {
+  // Calculate boundaries based on header positions
+  const priceEnd = headers.PURCHASE_VALUE ? headers.PURCHASE_VALUE.x - 5 : headers.GAIN_LOSS?.x - 5 || headers.PRICE.x + 100;
+  const purchaseEnd = headers.GAIN_LOSS ? headers.GAIN_LOSS.x - 5 : headers.PURCHASE_VALUE?.x + 100 || Infinity;
+  
+  return {
+    quantity: { start: 0, end: headers.NAME.x - 5 },
+    name: { start: headers.NAME.x - 5, end: headers.PRICE.x - 5 },
+    price: { start: headers.PRICE.x - 5, end: priceEnd },
+    purchaseValue: headers.PURCHASE_VALUE ? { start: headers.PURCHASE_VALUE.x - 5, end: purchaseEnd } : null,
+    gainLoss: headers.GAIN_LOSS ? { start: headers.GAIN_LOSS.x - 5, end: Infinity } : null,
+    headerY: headers.QUANTITY.y,
+  };
+}
+
+function extractCryptoPositions(items, boundaries) {
+  // Use global debugLog function or fallback to console.log
+  const debugLog = window.debugLog || ((msg) => { console.log(msg); });
+  
+  debugLog('=== EXTRACTING CRYPTO POSITIONS ===');
+  debugLog(`Total items: ${items.length}`);
+  debugLog(`Boundaries: ${JSON.stringify(boundaries)}`);
+  
+  // Filter items below headers
+  const contentItems = items.filter(item => item.y < boundaries.headerY - 5 && item.text.trim() !== '');
+  debugLog(`Content items (below headers): ${contentItems.length}`);
+  
+  if (contentItems.length === 0) return [];
+
+  // Group items into lines
+  const lines = groupItemsIntoLines(contentItems, 2);
+  debugLog(`Grouped into lines: ${lines.length}`);
+
+  const positions = [];
+  let currentPosition = null;
+
+  // Regex patterns
+  const QTY_PATTERN = /^([\d.]+,\d{2,6}|\d+([.,]\d+)?)\s/; // Quantity at start of line
+  const STK_PATTERN = /Stk\.?/i;
+  const DATE_PATTERN = /(\d{2}\.\d{2}\.\d{4})/;
+  const PERCENT_PATTERN = /(-?\d+[,.]?\d*)%/;
+  const SKIP_PATTERNS = /(CRYPTO-ÜBERSICHT|NOMINALE|INSTRUMENT NAME|PREIS JE ANTEIL|KAUFWERT|GEWINN|VERLUST|ANZAHL DER POSITIONEN|KURSWERT|SUMME|Aufstellung)/i;
+  
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const text = line.text;
+
+    debugLog(`\n--- Processing Crypto Line ${i} ---`);
+    debugLog(`Text: "${text}"`);
+
+    // Skip header lines and section markers
+    if (SKIP_PATTERNS.test(text)) {
+      debugLog('  -> SKIPPED (header/section marker)');
+      continue;
+    }
+
+    // Check if this line starts with a quantity number (new position)
+    // Pattern: "0,083216  Ethereum (Ethereum) 2.288,4 214,9 -24,47 190,43"
+    const qtyMatch = QTY_PATTERN.exec(text.trim());
+    if (qtyMatch) {
+      debugLog('  -> QUANTITY LINE DETECTED');
+      
+      // Save previous position if exists
+      if (currentPosition && currentPosition.quantity != null) {
+        debugLog(`  -> Saving previous position: name="${currentPosition.name}"`);
+        positions.push(currentPosition);
+      }
+
+      // Start new position
+      const qtyStr = qtyMatch[1];
+      currentPosition = {
+        quantity: parseEuropeanNumber(qtyStr),
+        unit: 'Stk', // Will be confirmed on next line
+        name: '',
+        pricePerUnit: null,
+        priceDate: '',
+        purchaseValueEUR: null,
+        gainLossEUR: null,
+        gainLossPercent: null,
+        marketValueEUR: null
+      };
+      debugLog(`  -> Created new position: quantity=${currentPosition.quantity}`);
+
+      // Extract name and right-aligned data from this line
+      const rightItems = line.items.filter(item => item.x >= boundaries.price.start);
+      const leftItems = line.items.filter(item => item.x < boundaries.price.start);
+      
+      // Extract name from left items (excluding quantity - first item)
+      const nameItems = leftItems.slice(1); // Skip first item (quantity)
+      
+      if (nameItems.length > 0) {
+        const nameText = nameItems.map(item => item.text).join(' ').trim();
+        if (nameText.length > 0) {
+          currentPosition.name = nameText;
+          debugLog(`  -> Extracted name: "${nameText}"`);
+        }
+      }
+
+      // Extract right-aligned data (price, purchase value, gain/loss, market value)
+      extractCryptoRightSideData(rightItems, text, boundaries, currentPosition);
+      continue;
+    }
+
+    // Check if this is the "Stk." line with date and percentage
+    if (STK_PATTERN.test(text) && currentPosition) {
+      debugLog('  -> STK LINE DETECTED (with date/percentage)');
+      
+      // Extract date
+      const dateMatch = DATE_PATTERN.exec(text);
+      if (dateMatch && !currentPosition.priceDate) {
+        currentPosition.priceDate = dateMatch[1];
+        debugLog(`  -> Extracted date: ${currentPosition.priceDate}`);
+      }
+      
+      // Extract percentage
+      const percentMatch = PERCENT_PATTERN.exec(text);
+      if (percentMatch && currentPosition.gainLossPercent === null) {
+        currentPosition.gainLossPercent = parseEuropeanNumber(percentMatch[1]);
+        debugLog(`  -> Extracted percentage: ${currentPosition.gainLossPercent}%`);
+      }
+      
+      // Position is complete, save it
+      if (currentPosition.quantity != null) {
+        debugLog(`  -> Saving crypto position: name="${currentPosition.name}"`);
+        positions.push(currentPosition);
+        currentPosition = null;
+      }
+      continue;
+    }
+
+    // If we have a current position, check for additional data
+    if (currentPosition) {
+      // Check if this line has right-aligned data
+      const rightItems = line.items.filter(item => item.x >= boundaries.price.start);
+      const hasRightData = rightItems.length > 0;
+      
+      if (hasRightData) {
+        extractCryptoRightSideData(rightItems, text, boundaries, currentPosition);
+        continue;
+      }
+      
+      // Otherwise, this might be part of the crypto name (shouldn't happen often)
+      if (text.trim().length > 0 && !hasRightData && !STK_PATTERN.test(text)) {
+        const cleanText = text.trim();
+        if (currentPosition.name === '') {
+          currentPosition.name = cleanText;
+          debugLog(`  -> ✓ SET NAME: "${cleanText}"`);
+        } else {
+          currentPosition.name = currentPosition.name + ' ' + cleanText;
+          debugLog(`  -> ✓ ADDED TO NAME: "${cleanText}"`);
+        }
+      }
+    }
+  }
+
+  // Don't forget the last position
+  if (currentPosition && currentPosition.quantity != null) {
+    debugLog(`\n--- Saving last crypto position ---`);
+    positions.push(currentPosition);
+  }
+
+  debugLog(`\n=== EXTRACTED ${positions.length} CRYPTO POSITIONS ===`);
+  
+  // Normalize output to match portfolio format exactly
+  return positions.map(pos => {
+    // Use marketValueEUR if available, otherwise calculate from purchaseValue + gainLoss
+    let marketValue = pos.marketValueEUR;
+    if (!marketValue && pos.purchaseValueEUR !== null && pos.gainLossEUR !== null) {
+      marketValue = pos.purchaseValueEUR + pos.gainLossEUR;
+    }
+    if (!marketValue && pos.purchaseValueEUR !== null) {
+      marketValue = pos.purchaseValueEUR;
+    }
+    
+    // Return same structure as portfolio positions
+    return {
+      quantity: pos.quantity,
+      unit: pos.unit,
+      name: pos.name.trim(),
+      isin: '', // Cryptos don't have ISINs - empty string to match portfolio format
+      pricePerUnit: pos.pricePerUnit,
+      priceDate: pos.priceDate,
+      marketValueEUR: marketValue,
+      custodyCountry: 'BitGo Deutschland GmbH' // From PDF text
+    };
+  });
+}
+
+function extractCryptoRightSideData(rightItems, text, boundaries, position) {
+  // Extract date
+  const DATE_PATTERN = /(\d{2}\.\d{2}\.\d{4})/;
+  const dateMatch = DATE_PATTERN.exec(text);
+  if (dateMatch && !position.priceDate) {
+    position.priceDate = dateMatch[1];
+  }
+
+  // Sort items by X position (left to right)
+  const sortedItems = [...rightItems].sort((a, b) => a.x - b.x);
+  
+  const numbers = [];
+  for (const item of sortedItems) {
+    const num = parseEuropeanNumber(item.text);
+    if (num !== null) {
+      numbers.push({ num, x: item.x, text: item.text });
+    }
+  }
+
+  debugLog(`  -> Found ${numbers.length} numbers in right columns`);
+
+  // Extract based on column boundaries and order
+  // Expected order: Price, Purchase Value, Gain/Loss EUR, Market Value
+  for (let idx = 0; idx < numbers.length; idx++) {
+    const { num, x, text: numText } = numbers[idx];
+    
+    // Price column (first number in price range)
+    if (x >= boundaries.price.start && 
+        (!boundaries.purchaseValue || x < boundaries.purchaseValue.start)) {
+      if (position.pricePerUnit === null) {
+        position.pricePerUnit = num;
+        debugLog(`  -> Extracted price: ${num} (from X=${x.toFixed(1)})`);
+      }
+    }
+    // Purchase value column
+    else if (boundaries.purchaseValue && 
+             x >= boundaries.purchaseValue.start && 
+             (!boundaries.gainLoss || x < boundaries.gainLoss.start)) {
+      if (position.purchaseValueEUR === null) {
+        position.purchaseValueEUR = num;
+        debugLog(`  -> Extracted purchase value: ${num} (from X=${x.toFixed(1)})`);
+      }
+    }
+    // Gain/Loss column - could be negative
+    else if (boundaries.gainLoss && x >= boundaries.gainLoss.start) {
+      // This is the gain/loss EUR value (negative numbers are handled by parseEuropeanNumber)
+      if (position.gainLossEUR === null) {
+        position.gainLossEUR = num;
+        debugLog(`  -> Extracted gain/loss EUR: ${num} (from X=${x.toFixed(1)})`);
+      }
+    }
+  }
+  
+  // Market value is usually the last number on the line (rightmost)
+  if (numbers.length > 0) {
+    const lastNum = numbers[numbers.length - 1];
+    // If we haven't set market value yet and this number is far right, it's likely the market value
+    if (position.marketValueEUR === null && lastNum.x >= (boundaries.gainLoss?.start || boundaries.purchaseValue?.start || boundaries.price.start + 150)) {
+      position.marketValueEUR = lastNum.num;
+      debugLog(`  -> Extracted market value: ${lastNum.num} (last number, X=${lastNum.x.toFixed(1)})`);
+    }
+  }
+}
+
 // expose helper so other modules can reuse sanity information
 window.parsePDF = parsePDF;
 window.parseCurrency = parseCurrency;
@@ -857,3 +1200,4 @@ window.computeCashSanityChecks = computeCashSanityChecks;
 window.findCashHeaders = findCashHeaders;
 window.findInterestHeaders = findInterestHeaders;
 window.findPortfolioHeaders = findPortfolioHeaders;
+window.findCryptoHeaders = findCryptoHeaders;

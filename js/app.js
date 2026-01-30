@@ -180,6 +180,18 @@ async function runAnalysis() {
       custodyCountry: p.custodyCountry,
     }));
 
+    // Crypto output normalized to match portfolio format exactly
+    const cryptoDisplay = (results.crypto || []).map((c) => ({
+      quantity: c.quantity,
+      unit: c.unit,
+      name: c.name,
+      isin: c.isin || '', // Cryptos don't have ISINs - empty string to match portfolio format
+      pricePerUnit: c.pricePerUnit,
+      priceDate: c.priceDate,
+      marketValueEUR: c.marketValueEUR,
+      custodyCountry: c.custodyCountry || 'BitGo Deutschland GmbH',
+    }));
+
     const tradingTransactions = cashForAnalytics.length ? parseTradingTransactions(cashForAnalytics) : [];
     const tradingData = tradingTransactions.length ? calculatePnL(tradingTransactions) : null;
 
@@ -196,6 +208,7 @@ async function runAnalysis() {
     let cashTabComponent = null;
     let mmfTabComponent = null;
     let portfolioTabComponent = null;
+    let cryptoTabComponent = null;
     let tradingTabComponent = null;
 
     // Auto-enrich trading data with portfolio if available
@@ -207,29 +220,32 @@ async function runAnalysis() {
       window.currentSecuritiesData = portfolioDisplay;
     }
 
-    if (cashDisplay.length || interestDisplay.length || portfolioDisplay.length || tradingTransactions.length) {
+    if (cashDisplay.length || interestDisplay.length || portfolioDisplay.length || cryptoDisplay.length || tradingTransactions.length) {
       const statsEl = document.createElement('div');
-      statsEl.innerHTML = createStatsSummary(cashDisplay, interestDisplay, portfolioDisplay);
+      statsEl.innerHTML = createStatsSummary(cashDisplay, interestDisplay, portfolioDisplay, cryptoDisplay);
       $("out").appendChild(statsEl);
 
       cashTabComponent = cashDisplay.length ? renderComponent('Cash-Transaktionen', cashDisplay, 'cash', { failedChecks }) : null;
       mmfTabComponent = interestDisplay.length ? renderComponent('Geldmarktfonds (MMF)', interestDisplay, 'interest') : null;
       portfolioTabComponent = portfolioDisplay.length ? renderComponent('Portfolio', portfolioDisplay, 'portfolio') : null;
+      cryptoTabComponent = cryptoDisplay.length ? renderComponent('Crypto', cryptoDisplay, 'crypto') : null;
       tradingTabComponent = tradingTransactions.length ? renderTradingComponent(tradingData, tradingTransactions) : null;
       const supportComp = renderSupportComponent({
         cashCount: cashDisplay.length,
         mmfCount: interestDisplay.length,
         portfolioCount: portfolioDisplay.length,
+        cryptoCount: cryptoDisplay.length,
         tradingCount: tradingTransactions.length,
         failedChecks
       });
 
-      if (cashTabComponent || chartsElement || mmfTabComponent || portfolioTabComponent || tradingTabComponent || supportComp) {
+      if (cashTabComponent || chartsElement || mmfTabComponent || portfolioTabComponent || cryptoTabComponent || tradingTabComponent || supportComp) {
         const tabs = createTabNavigationWithTrading({
           cash: cashTabComponent,
           charts: chartsElement,
           mmf: mmfTabComponent,
           portfolio: portfolioTabComponent,
+          crypto: cryptoTabComponent,
           trading: tradingTabComponent,
           support: supportComp,
           onChartsActivate: chartsBundle ? () => {
@@ -254,7 +270,7 @@ async function runAnalysis() {
       renderTradingCharts(tradingData, tradingTransactions);
     }
 
-    if (!cashDisplay.length && !interestDisplay.length && !portfolioDisplay.length) {
+    if (!cashDisplay.length && !interestDisplay.length && !portfolioDisplay.length && !cryptoDisplay.length) {
       $("status").textContent = 'Keine Transaktionen gefunden – bitte prüfe das PDF.';
     } else if (failedChecks > 0) {
       $("status").textContent = `Fertig – ${failedChecks} widersprüchliche Salden erkannt. Downloads verfügbar, bitte Daten prüfen.`;
