@@ -1,5 +1,5 @@
 # Trade Republic PDF Converter
-
+Use it for free here kontoauszug.jonathanpagel.com/
 Open-source browser tool to turn Trade Republic account statements (PDF) into structured CSV, Excel, and JSON files. Everything runs locally in the browser—no trackers, payments, or SaaS backends.
 
 ## Features
