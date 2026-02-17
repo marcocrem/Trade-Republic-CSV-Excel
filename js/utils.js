@@ -67,6 +67,8 @@ const moneyKeys = [
   "saldo",
   "kurs",
   "betrag",
+  "pricePerUnit",
+  "marketValueEUR",
 ];
 
 /* ===================== PDF.js Init ===================== */
