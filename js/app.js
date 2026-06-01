@@ -151,11 +151,11 @@ async function runAnalysis() {
 
     const cashDisplay = cashTransactionsWithSanity.map((t) => ({ ...t }));
     const cashForAnalytics = cashTransactionsWithSanity.map((t) => ({
-      date: t.datum,
-      type: t.typ,
-      description: t.beschreibung,
-      incoming: t.zahlungseingang,
-      outgoing: t.zahlungsausgang,
+      date: t.data,
+      type: t.tipo,
+      description: t.descrizione,
+      incoming: t.entrate,
+      outgoing: t.uscite,
       balance: t.saldo,
     }));
 

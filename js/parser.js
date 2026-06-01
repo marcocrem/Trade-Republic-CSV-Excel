@@ -273,7 +273,7 @@ function findCashHeaders(items) {
   const headerKeywords = [
     'DATUM', 'TYP', 'BESCHREIBUNG', 'ZAHLUNGSEINGANG', 'ZAHLUNGSAUSGANG', 'SALDO',
     // Italian equivalents
-    'DATA', 'TIPO', 'DESCRIZIONE', 'IN ENTRATA', 'IN USCITA',
+    'DATA', 'TIPO', 'DESCRIZIONE', 'ENTRATA', 'IN USCITA',
     // English equivalents
     'DATE', 'TYPE', 'DESCRIPTION', 'MONEY', 'IN', 'OUT', 'BALANCE'
   ];
@@ -331,7 +331,7 @@ function findCashHeaders(items) {
     ZAHLUNGEN: potentialHeaders.find(p => {
       const t = p.text.trim();
       return (t.includes('ZAHLUNGSEINGANG') && t.includes('ZAHLUNGSAUSGANG')) ||
-             (t.includes('IN ENTRATA') && t.includes('IN USCITA')) ||
+             (t.includes('ENTRATA') && t.includes('IN USCITA')) ||
              (t.includes('MONEY IN') && t.includes('MONEY OUT'));
     }) || null,
     ZAHLUNGSEINGANG: null,
@@ -456,25 +456,25 @@ function extractTransactionsFromPage(items, boundaries, type) {
 
     if (type === 'cash') {
       transaction = {
-        datum: '',
-        typ: '',
-        beschreibung: '',
-        zahlungseingang: '',
-        zahlungsausgang: '',
+        data: '',
+        tipo: '',
+        descrizione: '',
+        entrate: '',
+        uscite: '',
         saldo: '',
       };
       const financialItems = [];
       for (const item of rowItems) {
-        if (item.x < boundaries.datum.end) transaction.datum += ' ' + item.text;
-        else if (item.x < boundaries.typ.end) transaction.typ += ' ' + item.text;
-        else if (item.x < boundaries.beschreibung.end) transaction.beschreibung += ' ' + item.text;
+        if (item.x < boundaries.datum.end) transaction.data += ' ' + item.text;
+        else if (item.x < boundaries.typ.end) transaction.tipo += ' ' + item.text;
+        else if (item.x < boundaries.beschreibung.end) transaction.descrizione += ' ' + item.text;
         else financialItems.push(item);
       }
       financialItems.sort((a, b) => a.x - b.x);
       if (financialItems.length > 0) transaction.saldo = financialItems.pop().text;
       for (const item of financialItems) {
-        if (item.x < boundaries.zahlungseingang.end) transaction.zahlungseingang += ' ' + item.text;
-        else if (item.x < boundaries.zahlungsausgang.end) transaction.zahlungsausgang += ' ' + item.text;
+        if (item.x < boundaries.zahlungseingang.end) transaction.entrate += ' ' + item.text;
+        else if (item.x < boundaries.zahlungsausgang.end) transaction.uscite += ' ' + item.text;
       }
     } else if (type === 'interest') {
       transaction = {
