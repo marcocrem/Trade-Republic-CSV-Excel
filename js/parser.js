@@ -277,17 +277,26 @@ function findCashHeaders(items) {
     // English equivalents
     'DATE', 'TYPE', 'DESCRIPTION', 'MONEY', 'IN', 'OUT', 'BALANCE'
   ];
-  const potentialHeaders = items.filter(item =>
-    item.text.trim().length > 2 &&
-    item.text.trim() === item.text.trim().toUpperCase() &&
-    headerKeywords.some(kw => item.text.includes(kw))
-  );
+
+  // "IN" da solo (lunghezza 2) è il prefisso delle keyword italiane composte "IN ENTRATA" / "IN USCITA".
+  // Viene accettato esplicitamente per consentire a findCompositeHeader di ricostruire
+  // l'intestazione quando pdf.js la divide in due item separati alla stessa Y.
+  const headerKeywordsShort = ['IN'];
+
+  const potentialHeaders = items.filter(item => {
+    const t = item.text.trim();
+    if (t.length === 0) return false;
+    if (t !== t.toUpperCase()) return false;
+    if (t.length > 2 && headerKeywords.some(kw => t.includes(kw))) return true;
+    if (headerKeywordsShort.includes(t)) return true; // accetta "IN" da solo
+    return false;
+  });
 
   console.log('Potential headers found:', potentialHeaders.map(h => h.text.trim()));
 
   const matchAny = (labels) => potentialHeaders.find(p => labels.includes(p.text.trim())) || null;
   
-  // Helper to find headers that might be split into multiple text items (like "MONEY IN")
+  // Helper to find headers that might be split into multiple text items (like "MONEY IN" or "IN ENTRATA")
   const findCompositeHeader = (keyword1, keyword2) => {
     const single = potentialHeaders.find(p => {
       const t = p.text.trim();
@@ -302,6 +311,7 @@ function findCashHeaders(items) {
                p.x > f.x && p.x < f.x + 100;
       });
       if (nearby) {
+        console.log(`findCompositeHeader: ricostruita intestazione "${keyword1} ${keyword2}" da due item separati`);
         return {
           text: `${keyword1} ${keyword2}`,
           x: f.x,
@@ -330,8 +340,15 @@ function findCashHeaders(items) {
   };
 
   if (!headers.ZAHLUNGEN) {
-    headers.ZAHLUNGSEINGANG = matchAny(['ZAHLUNGSEINGANG', 'IN ENTRATA']) || findCompositeHeader('MONEY', 'IN');
-    headers.ZAHLUNGSAUSGANG = matchAny(['ZAHLUNGSAUSGANG', 'IN USCITA']) || findCompositeHeader('MONEY', 'OUT');
+    // Cerca prima il testo unito, poi la versione composta da due item separati
+    // (es. "IN" + "ENTRATA" su due item distinti alla stessa Y)
+    headers.ZAHLUNGSEINGANG = matchAny(['ZAHLUNGSEINGANG', 'IN ENTRATA'])
+      || findCompositeHeader('MONEY', 'IN')
+      || findCompositeHeader('IN', 'ENTRATA');
+
+    headers.ZAHLUNGSAUSGANG = matchAny(['ZAHLUNGSAUSGANG', 'IN USCITA'])
+      || findCompositeHeader('MONEY', 'OUT')
+      || findCompositeHeader('IN', 'USCITA');
   }
   
   console.log('Matched headers:', {
